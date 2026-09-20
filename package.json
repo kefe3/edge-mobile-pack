@@ -1,32 +1,21 @@
 {
   "name": "edge-mobile-pack",
-  "version": "2.0.0",
-  "description": "Enterprise Mobile Optimization, Low-Latency WebRTC Multi-STUN/TURN & Offline-First Background Sync Suite for Modern Web Applications.",
-  "main": "dist/edge-mobile-pack.min.js",
-  "module": "src/edge-mobile-pack.js",
+  "version": "2.2.0",
+  "description": "Safe, Modular Mobile Utilities & Touch Gesture Engine for Mobile Web & PWAs",
+  "main": "dist/edge-mobile.min.js",
   "style": "dist/edge-mobile-pack.min.css",
   "scripts": {
-    "build": "node build.js",
-    "test": "echo \"Error: no test specified\" && exit 0"
+    "test": "node -c src/edge-mobile.js"
   },
   "keywords": [
-    "offline-first",
-    "background-sync",
-    "indexeddb",
+    "mobile",
+    "touch",
+    "gestures",
+    "safe-area",
+    "haptics",
     "pwa",
-    "mobile-optimization",
-    "touch-gestures",
-    "webrtc",
-    "stun",
-    "turn",
-    "latency-reducer",
-    "swipe",
-    "pull-to-refresh"
+    "origin-edge"
   ],
   "author": "Origin Edge",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/kefe3/edge-mobile-pack.git"
-  }
+  "license": "MIT"
 }

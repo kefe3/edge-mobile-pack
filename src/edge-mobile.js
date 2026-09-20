@@ -1,11 +1,12 @@
 /**
- * EdgeMobile.js (v2.0.0)
- * Modern mobile UX engine: Touch gestures (swipe, pinch, pull-to-refresh), 
- * virtual keyboard viewport scroll compensation, haptic feedback, and mobile bottom navigation dock.
+ * EdgeMobile.js (v2.2.0)
+ * Non-intrusive, production-grade mobile utility library for touch devices.
+ * Modular swipe gestures, haptic feedback, safe-area insets, and container-bound pull-to-refresh.
  * 
- * Part of Origin Edge Mobile Pack.
+ * Part of Origin Edge Ecosystem.
  * @license MIT
  */
+
 (function (root, factory) {
   if (typeof define === 'function' && define.amd) {
     define([], factory);
@@ -17,16 +18,33 @@
 }(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  // --- 1. Touch Gesture Recognizer ---
+  // 1. Device Capabilities
+  function isTouchDevice() {
+    return (
+      (typeof window !== 'undefined' && 'ontouchstart' in window) ||
+      (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
+    );
+  }
+
+  // 2. Safe Haptic Feedback
+  function vibrate(pattern = 15) {
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      try { navigator.vibrate(pattern); } catch (e) {}
+    }
+  }
+
+  // 3. Container-Scoped Gesture Recognizer
   class GestureManager {
-    constructor(element = document) {
-      this.element = element;
+    constructor(element) {
+      this.element = typeof element === 'string' ? document.querySelector(element) : element;
       this.startX = 0;
       this.startY = 0;
       this.startTime = 0;
       this.listeners = new Map();
 
-      this._bindEvents();
+      if (this.element) {
+        this._bindEvents();
+      }
     }
 
     _bindEvents() {
@@ -44,216 +62,100 @@
           const deltaY = e.changedTouches[0].clientY - this.startY;
           const deltaTime = Date.now() - this.startTime;
 
-          // Swipe detection threshold: > 45px in < 400ms
-          if (deltaTime < 400) {
+          // Threshold: > 45px swipe in < 350ms
+          if (deltaTime < 350) {
             if (Math.abs(deltaX) > 45 && Math.abs(deltaX) > Math.abs(deltaY) * 1.5) {
-              const direction = deltaX > 0 ? 'swiperight' : 'swipeleft';
-              this._emit(direction, { deltaX, deltaY, originalEvent: e });
+              const dir = deltaX > 0 ? 'swiperight' : 'swipeleft';
+              this._emit(dir, { deltaX, deltaY, originalEvent: e });
             } else if (Math.abs(deltaY) > 45 && Math.abs(deltaY) > Math.abs(deltaX) * 1.5) {
-              const direction = deltaY > 0 ? 'swipedown' : 'swipeup';
-              this._emit(direction, { deltaX, deltaY, originalEvent: e });
+              const dir = deltaY > 0 ? 'swipedown' : 'swipeup';
+              this._emit(dir, { deltaX, deltaY, originalEvent: e });
             }
           }
         }
       }, { passive: true });
     }
 
-    on(gesture, callback) {
-      if (!this.listeners.has(gesture)) this.listeners.set(gesture, []);
-      this.listeners.get(gesture).push(callback);
-      return () => this.off(gesture, callback);
+    on(event, callback) {
+      if (!this.listeners.has(event)) this.listeners.set(event, []);
+      this.listeners.get(event).push(callback);
+      return () => this.off(event, callback);
     }
 
-    off(gesture, callback) {
-      if (this.listeners.has(gesture)) {
-        this.listeners.set(gesture, this.listeners.get(gesture).filter(fn => fn !== callback));
+    off(event, callback) {
+      if (this.listeners.has(event)) {
+        this.listeners.set(event, this.listeners.get(event).filter(fn => fn !== callback));
       }
     }
 
-    _emit(gesture, data) {
-      if (this.listeners.has(gesture)) {
-        this.listeners.get(gesture).forEach(fn => fn(data));
+    _emit(event, data) {
+      if (this.listeners.has(event)) {
+        this.listeners.get(event).forEach(fn => fn(data));
       }
     }
   }
 
-  // --- 2. Virtual Viewport Keyboard Compensator ---
-  function initKeyboardCompensator() {
-    if (typeof window === 'undefined' || !window.visualViewport) return;
-
-    window.visualViewport.addEventListener('resize', () => {
-      const isKeyboardOpen = window.visualViewport.height < window.innerHeight * 0.75;
-      document.documentElement.classList.toggle('edge-keyboard-open', isKeyboardOpen);
-      
-      const bottomDock = document.getElementById('edge-bottom-dock');
-      if (bottomDock) {
-        bottomDock.style.display = isKeyboardOpen ? 'none' : 'flex';
-      }
-    });
-  }
-
-  // --- 3. Pull-to-Refresh Controller ---
-  function initPullToRefresh(onRefreshCallback) {
-    if (typeof document === 'undefined') return;
+  // 4. Container-Bound Opt-In Pull-to-Refresh
+  function enablePullToRefresh(targetContainer, onRefresh) {
+    if (!targetContainer || typeof onRefresh !== 'function') return;
+    const el = typeof targetContainer === 'string' ? document.querySelector(targetContainer) : targetContainer;
+    if (!el) return;
 
     let touchStartY = 0;
     let isPulling = false;
-    let pullIndicator = null;
 
-    function getIndicator() {
-      if (pullIndicator) return pullIndicator;
-      pullIndicator = document.createElement('div');
-      pullIndicator.id = 'edge-pull-indicator';
-      pullIndicator.style.cssText = `
-        position: fixed;
-        top: 0;
-        left: 50%;
-        transform: translate(-50%, -100%);
-        z-index: 99999;
-        background: rgba(99, 102, 241, 0.95);
-        color: #fff;
-        padding: 6px 14px;
-        border-radius: 9999px;
-        font-size: 12px;
-        font-weight: bold;
-        transition: transform 0.2s ease;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.3);
-      `;
-      pullIndicator.innerText = '↓ Yenilemek için çekin';
-      document.body.appendChild(pullIndicator);
-      return pullIndicator;
-    }
-
-    window.addEventListener('touchstart', (e) => {
-      if (window.scrollY <= 0 && e.touches.length === 1) {
+    el.addEventListener('touchstart', (e) => {
+      if (el.scrollTop <= 0 && e.touches.length === 1) {
         touchStartY = e.touches[0].clientY;
         isPulling = true;
       }
     }, { passive: true });
 
-    window.addEventListener('touchmove', (e) => {
-      if (!isPulling) return;
-      const currentY = e.touches[0].clientY;
-      const pullDistance = currentY - touchStartY;
-
-      if (pullDistance > 20 && window.scrollY <= 0) {
-        const ind = getIndicator();
-        ind.style.transform = `translate(-50%, ${Math.min(pullDistance * 0.4, 70)}px)`;
-        if (pullDistance > 90) {
-          ind.innerText = '⚡ Bırakın ve Yenilensin';
-          ind.style.background = 'rgba(16, 185, 129, 0.95)';
-        } else {
-          ind.innerText = '↓ Yenilemek için çekin';
-          ind.style.background = 'rgba(99, 102, 241, 0.95)';
-        }
-      }
-    }, { passive: true });
-
-    window.addEventListener('touchend', (e) => {
+    el.addEventListener('touchend', (e) => {
       if (!isPulling) return;
       isPulling = false;
-      const pullDistance = e.changedTouches[0].clientY - touchStartY;
-      const ind = getIndicator();
-
-      if (pullDistance > 90 && window.scrollY <= 0) {
-        ind.innerText = 'Yenileniyor...';
-        EdgeMobile.vibrate(25);
-        if (onRefreshCallback) {
-          onRefreshCallback();
-        } else {
-          window.location.reload();
-        }
+      const pullDist = e.changedTouches[0].clientY - touchStartY;
+      if (pullDist > 80 && el.scrollTop <= 0) {
+        vibrate(20);
+        onRefresh();
       }
-
-      setTimeout(() => {
-        if (ind) ind.style.transform = 'translate(-50%, -100%)';
-      }, 300);
     }, { passive: true });
   }
 
-  // --- 4. Haptic Feedback Trigger ---
-  function vibrate(pattern = 15) {
-    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-      try { navigator.vibrate(pattern); } catch (e) {}
-    }
-  }
-
-  // --- 5. Mobile Bottom Dock Factory ---
-  function createBottomDock(items = []) {
-    if (typeof document === 'undefined') return null;
-    let dock = document.getElementById('edge-bottom-dock');
-    if (dock) dock.remove();
-
-    dock = document.createElement('nav');
-    dock.id = 'edge-bottom-dock';
-    dock.className = 'edge-bottom-dock';
-    dock.style.cssText = `
-      position: fixed;
-      bottom: 0;
-      left: 0;
-      right: 0;
-      z-index: 99990;
-      display: flex;
-      align-items: center;
-      justify-content: space-around;
-      height: 60px;
-      padding-bottom: env(safe-area-inset-bottom, 0px);
-      background: rgba(6, 8, 15, 0.88);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      border-top: 1px solid rgba(255, 255, 255, 0.08);
-      font-family: inherit;
-    `;
-
+  // 5. Safe Dock Builder
+  function createDock(items = [], options = {}) {
+    const dock = document.createElement('nav');
+    dock.className = options.className || 'edge-mobile-dock';
+    
     items.forEach(item => {
       const btn = document.createElement(item.href ? 'a' : 'button');
       if (item.href) btn.href = item.href;
-      btn.className = 'edge-dock-item';
-      btn.style.cssText = `
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 3px;
-        background: transparent;
-        border: none;
-        color: #94a3b8;
-        font-size: 10px;
-        font-weight: 600;
-        text-decoration: none;
-        cursor: pointer;
-        padding: 6px 12px;
-        border-radius: 12px;
-        transition: all 0.2s ease;
-        touch-action: manipulation;
-      `;
+      btn.className = 'edge-dock-item' + (item.active ? ' active' : '');
       btn.innerHTML = `
-        <span style="font-size:16px;">${item.icon || '★'}</span>
-        <span>${item.label || ''}</span>
+        <span class="edge-dock-icon">${item.icon || ''}</span>
+        <span class="edge-dock-label">${item.label || ''}</span>
       `;
       btn.addEventListener('click', (e) => {
-        EdgeMobile.vibrate(10);
+        vibrate(10);
         if (item.onClick) item.onClick(e);
       });
       dock.appendChild(btn);
     });
 
-    document.body.appendChild(dock);
-    document.body.style.paddingBottom = '70px';
+    if (options.target) {
+      const parent = typeof options.target === 'string' ? document.querySelector(options.target) : options.target;
+      if (parent) parent.appendChild(dock);
+    }
     return dock;
   }
 
-  // --- Auto-Initialize Viewport Fixes ---
-  if (typeof window !== 'undefined') {
-    initKeyboardCompensator();
-  }
-
   return {
-    version: '2.0.0',
+    version: '2.2.0',
+    isTouchDevice,
+    vibrate,
     GestureManager,
-    createGestureManager: (el) => new GestureManager(el),
-    initKeyboardCompensator,
-    initPullToRefresh,
-    createBottomDock,
-    vibrate
+    bindSwipe: (el) => new GestureManager(el),
+    enablePullToRefresh,
+    createDock
   };
 }));
