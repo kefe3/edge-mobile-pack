@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="tr" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+  <title>Edge Mobile & Offline Pack — Live Interactive Playground</title>
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800;900&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <link rel="stylesheet" href="../src/edge-mobile-pack.css">
+  
+  <script src="../src/edge-offline.js"></script>
+  <script src="../src/edge-mobile.js"></script>
+  <script src="../src/edge-turn-accelerator.js"></script>
+  <script src="../src/edge-mobile-pack.js"></script>
+
+  <style>
+    body {
+      background: #040711;
+      color: #e2e8f0;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background-image: 
+        radial-gradient(circle at 50% 0%, rgba(99, 102, 241, 0.18) 0%, transparent 50%),
+        radial-gradient(circle at 100% 100%, rgba(16, 185, 129, 0.08) 0%, transparent 40%),
+        linear-gradient(to right, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+      background-size: 100% 100%, 100% 100%, 40px 40px, 40px 40px;
+    }
+    .glass-card {
+      background: rgba(13, 19, 36, 0.75);
+      backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 1.25rem;
+    }
+    .gesture-box {
+      border: 2px dashed rgba(99, 102, 241, 0.4);
+      transition: all 0.2s ease;
+    }
+    .gesture-box.active {
+      border-color: #10b981;
+      background: rgba(16, 185, 129, 0.08);
+    }
+  </style>
+</head>
+<body class="min-h-screen p-4 md:p-8 flex flex-col items-center justify-start space-y-8">
+
+  <!-- Header -->
+  <header class="text-center max-w-2xl space-y-3">
+    <div class="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 text-xs font-mono font-bold">
+      <span>🚀 Origin Edge Mobile Pack v2.0</span>
+    </div>
+    <h1 class="text-3xl md:text-5xl font-black text-white tracking-tight">
+      Mobil Uyumluluk & <br><span class="bg-gradient-to-r from-indigo-400 via-purple-300 to-emerald-400 bg-clip-text text-transparent">Offline-First Suite</span>
+    </h1>
+    <p class="text-xs md:text-sm text-slate-400">
+      İnternet kesilse bile çalışan IndexedDB kuyruğu, WebRTC düşük gecikmeli STUN/TURN hızlandırıcı ve mobil dokunma optimizasyonu.
+    </p>
+  </header>
+
+  <main class="max-w-4xl w-full grid grid-cols-1 md:grid-cols-2 gap-6">
+
+    <!-- 1. Offline Sync Test Simulator -->
+    <div class="glass-card p-6 space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h2 class="font-bold text-white flex items-center gap-2">
+          <i class="fa-solid fa-wifi text-indigo-400"></i> Çevrimdışı Senkronizasyon
+        </h2>
+        <span id="netStatusBadge" class="px-2.5 py-0.5 rounded-full text-xs font-mono font-bold bg-emerald-500/20 text-emerald-400">Çevrimiçi</span>
+      </div>
+
+      <p class="text-xs text-slate-400">
+        İnternet bağlantınızı kesip bir işlem gönderin; işlem kaybolmadan IndexedDB kuyruğuna yazılır, internet bağlanınca otomatik iletilir.
+      </p>
+
+      <div class="space-y-3">
+        <input type="text" id="actionNote" placeholder="Örn: Yeni not, e-posta taslağı..." class="w-full p-3 bg-slate-950 rounded-xl border border-slate-800 text-xs font-mono text-white focus:border-indigo-500 outline-none">
+        
+        <div class="flex gap-2">
+          <button onclick="testEnqueue()" class="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-1.5">
+            <i class="fa-solid fa-plus"></i> İşlem Kuyruğuna Ekle
+          </button>
+          <button onclick="EdgeOffline.syncAll()" class="px-4 py-2.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 font-bold text-xs rounded-xl border border-emerald-500/30 transition-all">
+            <i class="fa-solid fa-sync"></i> Senkronize Et
+          </button>
+        </div>
+      </div>
+
+      <div class="space-y-1.5 pt-2">
+        <div class="flex justify-between text-xs font-mono text-slate-400">
+          <span>Kuyruktaki Bekleyen İşlemler:</span>
+          <span id="queueCount" class="text-amber-400 font-bold">0</span>
+        </div>
+        <div id="queueList" class="p-2.5 bg-slate-950 rounded-xl border border-slate-800 text-[11px] font-mono text-slate-300 max-h-32 overflow-y-auto space-y-1">
+          <span class="text-slate-500 italic">Kuyruk boş.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2. Touch Gestures & Mobile Area -->
+    <div class="glass-card p-6 space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h2 class="font-bold text-white flex items-center gap-2">
+          <i class="fa-solid fa-hand-pointer text-purple-400"></i> Dokunma & Kaydırma (Swipe)
+        </h2>
+        <span class="text-xs text-purple-400 font-mono">Touch Engine</span>
+      </div>
+
+      <p class="text-xs text-slate-400">
+        Aşağıdaki alana parmağınızla (veya fareyle) Sağa, Sola, Yukarı veya Aşağı kaydırın:
+      </p>
+
+      <div id="touchTarget" class="gesture-box rounded-2xl h-40 flex flex-col items-center justify-center text-center p-4 space-y-2 cursor-grab select-none">
+        <i class="fa-solid fa-arrows-up-down-left-right text-2xl text-indigo-400"></i>
+        <div id="gestureResult" class="text-xs font-mono text-slate-300 font-bold">
+          Bu alanda kaydırma yapın
+        </div>
+      </div>
+
+      <div class="flex gap-2 text-xs">
+        <button onclick="EdgeMobile.vibrate([20, 50, 20])" class="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold rounded-xl transition-all">
+          📳 Haptic Titreşim Testi
+        </button>
+      </div>
+    </div>
+
+    <!-- 3. WebRTC Multi-STUN Low Latency Monitor -->
+    <div class="glass-card p-6 space-y-4 md:col-span-2">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h2 class="font-bold text-white flex items-center gap-2">
+          <i class="fa-solid fa-bolt text-amber-400"></i> Düşük Gecikmeli WebRTC Multi-STUN/TURN Hızlandırıcı
+        </h2>
+        <span class="px-2.5 py-0.5 rounded-full text-xs font-mono font-bold bg-amber-500/20 text-amber-300">Max-Bundle ICE</span>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
+        <div class="p-3 bg-slate-950 rounded-xl border border-slate-800 space-y-1">
+          <span class="text-[11px] text-slate-400 font-mono">STUN/TURN Havuzu</span>
+          <div class="text-base font-black text-indigo-400 font-mono">6 Düğüm (Google + Cloudflare)</div>
+        </div>
+        <div class="p-3 bg-slate-950 rounded-xl border border-slate-800 space-y-1">
+          <span class="text-[11px] text-slate-400 font-mono">ICE Pre-Gathering</span>
+          <div class="text-base font-black text-emerald-400 font-mono">10 Aday Havuzu</div>
+        </div>
+        <div class="p-3 bg-slate-950 rounded-xl border border-slate-800 space-y-1">
+          <span class="text-[11px] text-slate-400 font-mono">Canlı P2P RTT</span>
+          <div id="rttDisplay" class="text-base font-black text-amber-400 font-mono">14 ms (Tahmini)</div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <footer class="text-center text-xs text-slate-500 pb-16">
+    © 2026 Origin Edge. MIT Lisanslı Açık Kaynak Kütüphane.
+  </footer>
+
+  <script>
+    // Initialize EdgeOffline Handler
+    EdgeOffline.registerHandler('SAVE_NOTE', async (payload) => {
+      console.log('Simulating server API call for:', payload);
+      await new Promise(r => setTimeout(r, 600)); // simulate 600ms network request
+      return true;
+    });
+
+    async function testEnqueue() {
+      const val = document.getElementById('actionNote').value.trim() || 'Örnek İşlem #' + Math.floor(Math.random()*1000);
+      await EdgeOffline.enqueue('SAVE_NOTE', { note: val, date: new Date().toISOString() });
+      document.getElementById('actionNote').value = '';
+      updateQueueView();
+    }
+
+    async function updateQueueView() {
+      const queue = await EdgeOffline.getQueue();
+      document.getElementById('queueCount').innerText = queue.length;
+      const list = document.getElementById('queueList');
+      if (queue.length === 0) {
+        list.innerHTML = '<span class="text-slate-500 italic">Kuyruk boş.</span>';
+      } else {
+        list.innerHTML = queue.map(i => `
+          <div class="flex justify-between items-center p-1.5 bg-slate-900 rounded">
+            <span>[${i.action}] ${i.payload.note || 'İşlem'}</span>
+            <span class="text-slate-500 text-[10px]">${new Date(i.timestamp).toLocaleTimeString()}</span>
+          </div>
+        `).join('');
+      }
+    }
+
+    // Touch Gestures setup
+    const gestureMgr = EdgeMobile.createGestureManager(document.getElementById('touchTarget'));
+    ['swipeleft', 'swiperight', 'swipeup', 'swipedown'].forEach(g => {
+      gestureMgr.on(g, () => {
+        const box = document.getElementById('touchTarget');
+        const res = document.getElementById('gestureResult');
+        box.classList.add('active');
+        res.innerHTML = `✨ Algılandı: <span class="text-emerald-400 uppercase font-black">${g}</span>`;
+        EdgeMobile.vibrate(15);
+        setTimeout(() => box.classList.remove('active'), 600);
+      });
+    });
+
+    // Mobile Pack Bottom Dock Init
+    EdgeMobilePack.init({
+      enablePullToRefresh: true,
+      bottomDockItems: [
+        { icon: '📱', label: 'Mobil', onClick: () => alert('Mobil Mod') },
+        { icon: '📶', label: 'Offline', onClick: () => alert('Offline Mod') },
+        { icon: '⚡', label: 'TURN', onClick: () => alert('WebRTC Hızlandırıcı') },
+        { icon: '🐙', label: 'GitHub', href: 'https://github.com/kefe3/edge-mobile-pack' }
+      ]
+    });
+
+    // Event updates
+    EdgeOffline.on('online', () => {
+      document.getElementById('netStatusBadge').className = 'px-2.5 py-0.5 rounded-full text-xs font-mono font-bold bg-emerald-500/20 text-emerald-400';
+      document.getElementById('netStatusBadge').innerText = 'Çevrimiçi';
+      updateQueueView();
+    });
+
+    EdgeOffline.on('offline', () => {
+      document.getElementById('netStatusBadge').className = 'px-2.5 py-0.5 rounded-full text-xs font-mono font-bold bg-rose-500/20 text-rose-400';
+      document.getElementById('netStatusBadge').innerText = 'Çevrimdışı';
+      updateQueueView();
+    });
+
+    EdgeOffline.on('synced', () => updateQueueView());
+    EdgeOffline.on('enqueue', () => updateQueueView());
+
+    updateQueueView();
+  </script>
+</body>
+</html>
