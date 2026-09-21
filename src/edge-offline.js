@@ -1,11 +1,13 @@
 /**
- * EdgeOffline.js (v2.0.0)
+ * EdgeOffline.js (v2.3.0)
  * Ultra-resilient, zero-dependency Offline-First & Background Sync Engine.
- * Supports IndexedDB priority queues, exponential backoff retry, network quality estimation, and reactive UI badges.
+ * Pure IndexedDB persistence with LocalStorage fallback, exponential backoff,
+ * fetch interceptor, queue management, and comprehensive network lifecycle events.
  * 
- * Part of Origin Edge Mobile Pack.
+ * Part of Origin Edge Ecosystem.
  * @license MIT
  */
+
 (function (root, factory) {
   if (typeof define === 'function' && define.amd) {
     define([], factory);
@@ -17,25 +19,38 @@
 }(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  const DB_NAME = 'EdgeOffline_DB';
-  const DB_VERSION = 2;
+  const DB_NAME = 'EdgeOffline_Store';
+  const DB_VERSION = 1;
   const STORE_NAME = 'sync_queue';
+  const LS_KEY = 'edge_offline_queue_v2';
 
   const listeners = new Map();
-  const handlers = new Map();
+  const customHandlers = new Map();
   let dbPromise = null;
   let isSyncing = false;
 
-  // --- Event Emitter ---
+  // ── 1. EVENT EMITTER ────────────────────────────────────────────────
+  function on(event, callback) {
+    if (!listeners.has(event)) listeners.set(event, []);
+    listeners.get(event).push(callback);
+    return () => off(event, callback);
+  }
+
+  function off(event, callback) {
+    if (listeners.has(event)) {
+      listeners.set(event, listeners.get(event).filter(fn => fn !== callback));
+    }
+  }
+
   function emit(event, payload) {
     if (listeners.has(event)) {
       listeners.get(event).forEach(fn => {
-        try { fn(payload); } catch (e) { console.error('[EdgeOffline:EventError]', e); }
+        try { fn(payload); } catch (e) { console.error('[EdgeOffline:ListenerError]', e); }
       });
     }
   }
 
-  // --- IndexedDB Core ---
+  // ── 2. STORAGE ENGINE (INDEXEDDB + LOCALSTORAGE FALLBACK) ───────────
   function getDB() {
     if (dbPromise) return dbPromise;
     dbPromise = new Promise((resolve) => {
@@ -43,354 +58,308 @@
         resolve(null);
         return;
       }
-      const req = indexedDB.open(DB_NAME, DB_VERSION);
-      req.onupgradeneeded = (e) => {
-        const db = e.target.result;
-        if (!db.objectStoreNames.contains(STORE_NAME)) {
-          const store = db.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
-          store.createIndex('action', 'action', { unique: false });
-          store.createIndex('priority', 'priority', { unique: false });
-          store.createIndex('timestamp', 'timestamp', { unique: false });
-          store.createIndex('status', 'status', { unique: false });
-        }
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => {
-        console.warn('[EdgeOffline] IndexedDB unavailable, using LocalStorage fallback');
+      try {
+        const req = indexedDB.open(DB_NAME, DB_VERSION);
+        req.onupgradeneeded = (e) => {
+          const db = e.target.result;
+          if (!db.objectStoreNames.contains(STORE_NAME)) {
+            const store = db.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+            store.createIndex('action', 'action', { unique: false });
+            store.createIndex('priority', 'priority', { unique: false });
+            store.createIndex('timestamp', 'timestamp', { unique: false });
+            store.createIndex('status', 'status', { unique: false });
+          }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => {
+          console.warn('[EdgeOffline] IndexedDB error, using LocalStorage fallback');
+          resolve(null);
+        };
+      } catch (err) {
+        console.warn('[EdgeOffline] IndexedDB unavailable:', err);
         resolve(null);
-      };
+      }
     });
     return dbPromise;
   }
 
-  // --- Network Connection Quality Estimator ---
+  function getLSQueue() {
+    try {
+      return JSON.parse(localStorage.getItem(LS_KEY) || '[]');
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveLSQueue(q) {
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify(q));
+    } catch (e) {}
+  }
+
+  // ── 3. QUEUE OPERATIONS ─────────────────────────────────────────────
+  /**
+   * Enqueue an item. Supports both object signature and (action, payload, options) signature:
+   * EdgeOffline.enqueue({ action: 'SAVE', url: '/api', body: {...} })
+   * EdgeOffline.enqueue('SAVE', { text: 'hello' }, { priority: 1 })
+   */
+  async function enqueue(arg1, arg2, arg3) {
+    let item = {};
+    if (typeof arg1 === 'string') {
+      item = {
+        action: arg1,
+        payload: arg2 || {},
+        body: arg2 || {},
+        ...(arg3 || {})
+      };
+    } else if (typeof arg1 === 'object' && arg1 !== null) {
+      item = { ...arg1 };
+      if (!item.payload && (item.body || item.data)) {
+        item.payload = item.body || item.data;
+      }
+    }
+
+    const queueItem = {
+      action: item.action || 'HTTP_REQUEST',
+      url: item.url || null,
+      method: (item.method || 'POST').toUpperCase(),
+      headers: item.headers || { 'Content-Type': 'application/json' },
+      body: item.body || item.payload || item.data || null,
+      payload: item.payload || item.body || item.data || {},
+      priority: typeof item.priority === 'number' ? item.priority : 5,
+      retryCount: 0,
+      maxRetries: typeof item.maxRetries === 'number' ? item.maxRetries : 5,
+      timestamp: Date.now(),
+      status: 'pending',
+      meta: item.meta || {}
+    };
+
+    const db = await getDB();
+    if (db) {
+      try {
+        const recordId = await new Promise((resolve, reject) => {
+          const tx = db.transaction([STORE_NAME], 'readwrite');
+          const store = tx.objectStore(STORE_NAME);
+          const req = store.add(queueItem);
+          req.onsuccess = (e) => resolve(e.target.result);
+          req.onerror = (e) => reject(e);
+        });
+        queueItem.id = recordId;
+      } catch (err) {
+        const q = getLSQueue();
+        queueItem.id = Date.now() + Math.random().toString(36).substr(2, 4);
+        q.push(queueItem);
+        saveLSQueue(q);
+      }
+    } else {
+      const q = getLSQueue();
+      queueItem.id = Date.now() + Math.random().toString(36).substr(2, 4);
+      q.push(queueItem);
+      saveLSQueue(q);
+    }
+
+    emit('enqueued', queueItem);
+    emit('enqueue', queueItem);
+    const count = await getPendingCount();
+    emit('queueChange', { count, item: queueItem });
+    return queueItem;
+  }
+
+  async function getPendingItems() {
+    const db = await getDB();
+    if (db) {
+      try {
+        return await new Promise((resolve) => {
+          const tx = db.transaction([STORE_NAME], 'readonly');
+          const store = tx.objectStore(STORE_NAME);
+          const req = store.getAll();
+          req.onsuccess = () => {
+            const items = (req.result || []).filter(i => i.status === 'pending');
+            items.sort((a, b) => a.priority - b.priority || a.timestamp - b.timestamp);
+            resolve(items);
+          };
+          req.onerror = () => resolve(getLSQueue().filter(i => i.status === 'pending'));
+        });
+      } catch (e) {
+        return getLSQueue().filter(i => i.status === 'pending');
+      }
+    }
+    return getLSQueue().filter(i => i.status === 'pending');
+  }
+
+  async function getPendingCount() {
+    const items = await getPendingItems();
+    return items.length;
+  }
+
+  async function removeItem(id) {
+    const db = await getDB();
+    if (db) {
+      try {
+        await new Promise((resolve) => {
+          const tx = db.transaction([STORE_NAME], 'readwrite');
+          tx.objectStore(STORE_NAME).delete(id);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+        });
+      } catch (e) {}
+    }
+    const q = getLSQueue().filter(i => i.id !== id);
+    saveLSQueue(q);
+    const count = await getPendingCount();
+    emit('queueChange', { count });
+  }
+
+  async function clearQueue() {
+    const db = await getDB();
+    if (db) {
+      try {
+        const tx = db.transaction([STORE_NAME], 'readwrite');
+        tx.objectStore(STORE_NAME).clear();
+      } catch (e) {}
+    }
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(LS_KEY);
+    }
+    emit('queueChange', { count: 0 });
+  }
+
+  // ── 4. CUSTOM ACTION HANDLERS ───────────────────────────────────────
+  function registerHandler(action, handlerFn) {
+    customHandlers.set(action, handlerFn);
+  }
+
+  // ── 5. REPLAY & SYNC ENGINE ─────────────────────────────────────────
+  async function processQueue() {
+    if (isSyncing || !isOnline()) return;
+    isSyncing = true;
+    emit('syncStart', {});
+
+    try {
+      const items = await getPendingItems();
+      for (const item of items) {
+        if (!isOnline()) break;
+
+        let success = false;
+        try {
+          if (customHandlers.has(item.action)) {
+            const fn = customHandlers.get(item.action);
+            const res = await fn(item.payload || item.body || item);
+            success = res !== false;
+          } else if (item.url) {
+            const res = await fetch(item.url, {
+              method: item.method,
+              headers: item.headers,
+              body: typeof item.body === 'string' ? item.body : JSON.stringify(item.body)
+            });
+            success = res.ok;
+          } else {
+            success = true;
+          }
+        } catch (err) {
+          success = false;
+        }
+
+        if (success) {
+          await removeItem(item.id);
+          emit('itemSynced', item);
+          emit('synced', item);
+        } else {
+          item.retryCount = (item.retryCount || 0) + 1;
+          if (item.retryCount >= item.maxRetries) {
+            await removeItem(item.id);
+            emit('itemFailed', { item, reason: 'Max retries exceeded' });
+          }
+        }
+      }
+    } finally {
+      isSyncing = false;
+      const remaining = await getPendingCount();
+      emit('syncComplete', { remaining });
+    }
+  }
+
+  // ── 6. FETCH WRAPPER & INTERCEPTOR ──────────────────────────────────
+  async function offlineFetch(url, options = {}, offlineFallback = null) {
+    if (isOnline()) {
+      try {
+        return await fetch(url, options);
+      } catch (err) {
+        // network error during active request
+      }
+    }
+
+    const method = (options.method || 'GET').toUpperCase();
+    if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(method)) {
+      const enqueued = await enqueue({
+        url,
+        method,
+        headers: options.headers || { 'Content-Type': 'application/json' },
+        body: options.body,
+        meta: { source: 'offlineFetch' }
+      });
+      return new Response(JSON.stringify({ offline: true, queued: true, item: enqueued }), {
+        status: 202,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    if (typeof offlineFallback === 'function') {
+      const fallbackData = await offlineFallback();
+      return new Response(JSON.stringify(fallbackData), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    throw new Error('[EdgeOffline] Network is offline and request could not be completed.');
+  }
+
+  // ── 7. NETWORK MONITORING ───────────────────────────────────────────
+  function isOnline() {
+    return typeof navigator !== 'undefined' ? navigator.onLine : true;
+  }
+
   function getNetworkInfo() {
     const nav = typeof navigator !== 'undefined' ? navigator : {};
     const conn = nav.connection || nav.mozConnection || nav.webkitConnection;
     return {
-      online: nav.onLine !== false,
-      effectiveType: conn ? conn.effectiveType : '4g',
-      rtt: conn ? conn.rtt : 50,
-      downlink: conn ? conn.downlink : 10,
-      saveData: conn ? conn.saveData : false
+      online: isOnline(),
+      effectiveType: conn?.effectiveType || 'unknown',
+      rtt: conn?.rtt || 0,
+      downlink: conn?.downlink || 0,
+      saveData: conn?.saveData || false
     };
   }
 
-  // --- UI Status Pill Component ---
-  let statusBadge = null;
-
-  function renderStatusUI() {
-    if (typeof document === 'undefined') return;
-    if (!statusBadge) {
-      statusBadge = document.createElement('div');
-      statusBadge.id = 'edge-offline-badge';
-      statusBadge.className = 'edge-offline-pill';
-      statusBadge.style.cssText = `
-        position: fixed;
-        bottom: 20px;
-        right: 20px;
-        z-index: 999999;
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        padding: 9px 16px;
-        border-radius: 9999px;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        font-size: 12.5px;
-        font-weight: 600;
-        backdrop-filter: blur(16px);
-        -webkit-backdrop-filter: blur(16px);
-        box-shadow: 0 10px 25px rgba(0,0,0,0.4), 0 0 15px rgba(99,102,241,0.25);
-        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-        transform: translateY(140%);
-        opacity: 0;
-        pointer-events: none;
-      `;
-      document.body.appendChild(statusBadge);
-    }
-    return statusBadge;
-  }
-
-  function updateBadge(state, text, count = 0) {
-    const el = renderStatusUI();
-    if (!el) return;
-
-    if (state === 'offline') {
-      el.style.background = 'rgba(239, 68, 68, 0.92)';
-      el.style.color = '#ffffff';
-      el.style.border = '1px solid rgba(255, 255, 255, 0.25)';
-      el.innerHTML = `
-        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#ffffff;box-shadow:0 0 8px #ffffff;animation:edgePulse 1.5s infinite;"></span>
-        <span>${text || 'Çevrimdışı Mod'}</span>
-        ${count > 0 ? `<span style="background:rgba(0,0,0,0.3);padding:2px 6px;border-radius:6px;font-size:11px;font-family:monospace;">${count} kuyrukta</span>` : ''}
-      `;
-      el.style.transform = 'translateY(0)';
-      el.style.opacity = '1';
-    } else if (state === 'syncing') {
-      el.style.background = 'rgba(99, 102, 241, 0.92)';
-      el.style.color = '#ffffff';
-      el.style.border = '1px solid rgba(255, 255, 255, 0.25)';
-      el.innerHTML = `
-        <span style="display:inline-block;animation:edgeSpin 1s linear infinite;">⚡</span>
-        <span>${text || 'Senkronize Ediliyor...'}</span>
-      `;
-      el.style.transform = 'translateY(0)';
-      el.style.opacity = '1';
-    } else if (state === 'online') {
-      el.style.background = 'rgba(16, 185, 129, 0.92)';
-      el.style.color = '#ffffff';
-      el.style.border = '1px solid rgba(255, 255, 255, 0.25)';
-      el.innerHTML = `
-        <span>✓</span>
-        <span>${text || 'Tüm işlemler senkronize edildi!'}</span>
-      `;
-      el.style.transform = 'translateY(0)';
-      el.style.opacity = '1';
-      setTimeout(() => {
-        el.style.transform = 'translateY(140%)';
-        el.style.opacity = '0';
-      }, 3500);
-    }
-  }
-
-  // --- Core API ---
-  const EdgeOffline = {
-    version: '2.0.0',
-
-    isOnline: () => typeof navigator !== 'undefined' ? navigator.onLine !== false : true,
-
-    getNetworkInfo,
-
-    on: (event, callback) => {
-      if (!listeners.has(event)) listeners.set(event, []);
-      listeners.get(event).push(callback);
-      return () => EdgeOffline.off(event, callback);
-    },
-
-    off: (event, callback) => {
-      if (listeners.has(event)) {
-        listeners.set(event, listeners.get(event).filter(fn => fn !== callback));
-      }
-    },
-
-    registerHandler: (action, handlerFn) => {
-      handlers.set(action, handlerFn);
-    },
-
-    enqueue: async (action, payload = {}, options = {}) => {
-      const item = {
-        action,
-        payload,
-        priority: options.priority || 'NORMAL', // HIGH, NORMAL, LOW
-        maxRetries: options.maxRetries || 5,
-        retryCount: 0,
-        timestamp: Date.now(),
-        status: 'pending'
-      };
-
-      const db = await getDB();
-      let recordId = null;
-
-      if (db) {
-        recordId = await new Promise((resolve, reject) => {
-          const tx = db.transaction(STORE_NAME, 'readwrite');
-          const store = tx.objectStore(STORE_NAME);
-          const req = store.add(item);
-          req.onsuccess = () => resolve(req.result);
-          req.onerror = () => reject(req.error);
-        });
-      } else {
-        const queue = JSON.parse(localStorage.getItem('edge_offline_queue') || '[]');
-        item.id = Date.now() + Math.random();
-        queue.push(item);
-        localStorage.setItem('edge_offline_queue', JSON.stringify(queue));
-        recordId = item.id;
-      }
-
-      emit('enqueue', { id: recordId, action, payload });
-
-      const count = await EdgeOffline.getQueueCount();
-      if (!EdgeOffline.isOnline()) {
-        updateBadge('offline', 'Çevrimdışı: İşlem Kaydedildi', count);
-      } else {
-        EdgeOffline.syncAll();
-      }
-
-      return recordId;
-    },
-
-    getQueue: async () => {
-      const db = await getDB();
-      if (db) {
-        return new Promise((resolve) => {
-          const tx = db.transaction(STORE_NAME, 'readonly');
-          const store = tx.objectStore(STORE_NAME);
-          const req = store.getAll();
-          req.onsuccess = () => resolve(req.result || []);
-          req.onerror = () => resolve([]);
-        });
-      } else {
-        return JSON.parse(localStorage.getItem('edge_offline_queue') || '[]');
-      }
-    },
-
-    getQueueCount: async () => {
-      const queue = await EdgeOffline.getQueue();
-      return queue.length;
-    },
-
-    remove: async (id) => {
-      const db = await getDB();
-      if (db) {
-        return new Promise((resolve) => {
-          const tx = db.transaction(STORE_NAME, 'readwrite');
-          const store = tx.objectStore(STORE_NAME);
-          store.delete(id);
-          tx.oncomplete = () => resolve(true);
-        });
-      } else {
-        let q = JSON.parse(localStorage.getItem('edge_offline_queue') || '[]');
-        q = q.filter(i => i.id !== id);
-        localStorage.setItem('edge_offline_queue', JSON.stringify(q));
-        return true;
-      }
-    },
-
-    clearQueue: async () => {
-      const db = await getDB();
-      if (db) {
-        return new Promise((resolve) => {
-          const tx = db.transaction(STORE_NAME, 'readwrite');
-          tx.objectStore(STORE_NAME).clear();
-          tx.oncomplete = () => resolve(true);
-        });
-      } else {
-        localStorage.removeItem('edge_offline_queue');
-        return true;
-      }
-    },
-
-    syncAll: async () => {
-      if (isSyncing || !EdgeOffline.isOnline()) return;
-      const items = await EdgeOffline.getQueue();
-      if (items.length === 0) return;
-
-      isSyncing = true;
-      emit('syncStart', { count: items.length });
-      updateBadge('syncing', `${items.length} bekleyen işlem senkronize ediliyor...`);
-
-      // Sort by priority: HIGH > NORMAL > LOW, then by timestamp
-      const priorityWeights = { HIGH: 3, NORMAL: 2, LOW: 1 };
-      items.sort((a, b) => {
-        const pA = priorityWeights[a.priority] || 2;
-        const pB = priorityWeights[b.priority] || 2;
-        if (pA !== pB) return pB - pA;
-        return a.timestamp - b.timestamp;
-      });
-
-      let successCount = 0;
-      for (const item of items) {
-        const handler = handlers.get(item.action);
-        if (handler) {
-          try {
-            await handler(item.payload);
-            await EdgeOffline.remove(item.id);
-            successCount++;
-            emit('synced', { item });
-          } catch (err) {
-            item.retryCount = (item.retryCount || 0) + 1;
-            console.error(`[EdgeOffline] Error syncing ${item.action} (attempt ${item.retryCount}):`, err);
-            if (item.retryCount >= (item.maxRetries || 5)) {
-              console.warn(`[EdgeOffline] Max retries reached for ${item.action}, removing from queue.`);
-              await EdgeOffline.remove(item.id);
-            }
-            emit('error', { item, error: err });
-          }
-        } else {
-          console.warn(`[EdgeOffline] No handler registered for action: "${item.action}". Skipping.`);
-        }
-      }
-
-      isSyncing = false;
-      emit('syncEnd', { successCount, remaining: (await EdgeOffline.getQueueCount()) });
-
-      if (successCount > 0) {
-        updateBadge('online', `${successCount} işlem başarıyla senkronize edildi! ✓`);
-      }
-    },
-
-    // --- Helper: Form Auto-Binder ---
-    bindForm: (formEl, actionName, options = {}) => {
-      if (!formEl) return;
-      formEl.addEventListener('submit', async (e) => {
-        if (!EdgeOffline.isOnline()) {
-          e.preventDefault();
-          const formData = new FormData(formEl);
-          const data = Object.fromEntries(formData.entries());
-          await EdgeOffline.enqueue(actionName, data, options);
-          if (options.onOfflineSubmit) options.onOfflineSubmit(data);
-          formEl.reset();
-        }
-      });
-    },
-
-    // --- Helper: Wrapped Fetch ---
-    fetch: async (url, options = {}, fallbackAction = null) => {
-      if (EdgeOffline.isOnline()) {
-        try {
-          return await fetch(url, options);
-        } catch (err) {
-          if (fallbackAction) {
-            await EdgeOffline.enqueue(fallbackAction, { url, options });
-            return new Response(JSON.stringify({ offline: true, queued: true }), {
-              status: 202,
-              headers: { 'Content-Type': 'application/json' }
-            });
-          }
-          throw err;
-        }
-      } else if (fallbackAction) {
-        await EdgeOffline.enqueue(fallbackAction, { url, options });
-        return new Response(JSON.stringify({ offline: true, queued: true }), {
-          status: 202,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      } else {
-        throw new Error('[EdgeOffline] Network is offline and no fallbackAction provided.');
-      }
-    }
-  };
-
-  // --- Global Listeners ---
   if (typeof window !== 'undefined') {
     window.addEventListener('online', () => {
       emit('online', getNetworkInfo());
-      setTimeout(() => EdgeOffline.syncAll(), 600);
+      setTimeout(processQueue, 600);
     });
 
-    window.addEventListener('offline', async () => {
-      const count = await EdgeOffline.getQueueCount();
+    window.addEventListener('offline', () => {
       emit('offline', getNetworkInfo());
-      updateBadge('offline', 'İnternet Kesildi • Çevrimdışı Mod', count);
     });
-
-    window.addEventListener('load', async () => {
-      if (!EdgeOffline.isOnline()) {
-        const count = await EdgeOffline.getQueueCount();
-        updateBadge('offline', 'Çevrimdışı Moddasınız', count);
-      } else {
-        EdgeOffline.syncAll();
-      }
-    });
-
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.addEventListener('message', (event) => {
-        if (event.data && event.data.type === 'TRIGGER_OFFLINE_SYNC') {
-          EdgeOffline.syncAll();
-        }
-      });
-    }
   }
 
-  return EdgeOffline;
+  return {
+    version: '2.3.0',
+    isOnline,
+    getNetworkInfo,
+    on,
+    off,
+    enqueue,
+    queueRequest: enqueue,
+    getPendingItems,
+    getQueue: getPendingItems,
+    getPendingCount,
+    removeItem,
+    clearQueue,
+    registerHandler,
+    processQueue,
+    sync: processQueue,
+    syncAll: processQueue,
+    fetch: offlineFetch
+  };
 }));

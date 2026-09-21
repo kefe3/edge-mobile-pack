@@ -1,11 +1,15 @@
 {
   "name": "edge-mobile-pack",
-  "version": "2.2.0",
-  "description": "Safe, Modular Mobile Utilities & Touch Gesture Engine for Mobile Web & PWAs",
-  "main": "dist/edge-mobile.min.js",
+  "version": "2.3.0",
+  "description": "Safe, Modular Mobile Compatibility, Touch Gestures, Offline-First & WebRTC Suite for PWAs",
+  "main": "dist/edge-mobile-pack.min.js",
   "style": "dist/edge-mobile-pack.min.css",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kefy266/edge-mobile-pack.git"
+  },
   "scripts": {
-    "test": "node -c src/edge-mobile.js"
+    "test": "node -c src/edge-mobile.js && node -c src/edge-offline.js && node -c src/edge-turn-accelerator.js && node -c src/edge-mobile-pack.js"
   },
   "keywords": [
     "mobile",
@@ -13,6 +17,7 @@
     "gestures",
     "safe-area",
     "haptics",
+    "offline-first",
     "pwa",
     "origin-edge"
   ],
